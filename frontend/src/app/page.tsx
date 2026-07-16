@@ -22,7 +22,7 @@ export default function Home() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const requestRef = useRef<number>();
+  const requestRef = useRef<number | undefined>(undefined);
   const streamRef = useRef<MediaStream | null>(null);
 
   // Stats
