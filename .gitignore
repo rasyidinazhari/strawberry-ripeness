@@ -1,0 +1,32 @@
+# Python Environment
+venv/
+__pycache__/
+*.pyc
+.env
+
+# YOLO / ML Outputs
+runs/
+*.pt
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+.agents
+.forge
+Datasets-1
+Datasets-2
+dataset_bbox
+Document
+dataset_colab.zip
+skills-lock.json

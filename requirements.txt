@@ -1,0 +1,9 @@
+ultralytics
+fastapi
+uvicorn[standard]
+python-multipart
+Pillow
+scikit-learn
+matplotlib
+seaborn
+numpy<2
