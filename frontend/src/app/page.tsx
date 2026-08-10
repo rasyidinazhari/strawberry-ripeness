@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Camera, Loader2, StopCircle, Video, AlertCircle } from "lucide-react";
+import { Camera, Loader2, StopCircle, Video, AlertCircle, Upload, Image as ImageIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -19,9 +19,14 @@ export default function Home() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [predictions, setPredictions] = useState<Prediction[]>([]);
+  
+  // New state for mode toggle and image upload
+  const [mode, setMode] = useState<"camera" | "upload">("camera");
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
   const requestRef = useRef<number | undefined>(undefined);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -56,6 +61,7 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ---------------- CAMERA LOGIC ----------------
   const startWebcam = async () => {
     try {
       setError(null);
@@ -98,7 +104,7 @@ export default function Home() {
   };
 
   const detectFrame = async () => {
-    if (!videoRef.current || !session) return;
+    if (!videoRef.current || !session || mode !== "camera") return;
     
     const vWidth = videoRef.current.videoWidth;
     const vHeight = videoRef.current.videoHeight;
@@ -108,7 +114,6 @@ export default function Home() {
       return;
     }
 
-    // Prepare an offscreen canvas specifically for the 640x640 model input
     const offscreenCanvas = document.createElement('canvas');
     offscreenCanvas.width = 640;
     offscreenCanvas.height = 640;
@@ -116,19 +121,17 @@ export default function Home() {
     
     if (!offscreenCtx) return;
 
-    // Draw the video frame onto the 640x640 canvas (it will squash it if aspect ratio is different, which YOLO expects)
     offscreenCtx.drawImage(videoRef.current, 0, 0, 640, 640);
 
     try {
       const tensor = preprocess(offscreenCtx, 640, 640);
-      const results = await session.run({ images: tensor }); // 'images' is default input name for YOLOv8
+      const results = await session.run({ images: tensor }); 
       
       const outputName = session.outputNames[0];
       const outputTensor = results[outputName];
 
       const rawPredictions = postprocess(outputTensor, 640, 640, 0.25, 0.45);
       
-      // We must scale the predictions back from 640x640 to the actual video intrinsic size
       const scaleX = vWidth / 640;
       const scaleY = vHeight / 640;
 
@@ -147,8 +150,65 @@ export default function Home() {
       console.error("Inference error:", e);
     }
 
-    // Schedule next frame
     requestRef.current = requestAnimationFrame(detectFrame);
+  };
+
+  // ---------------- UPLOAD LOGIC ----------------
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setImageSrc(url);
+      setPredictions([]);
+      setDisplayScale({ x: 1, y: 1 });
+    }
+  };
+
+  const detectImage = async () => {
+    if (!imageRef.current || !session) return;
+    setError(null);
+    
+    const imgWidth = imageRef.current.naturalWidth;
+    const imgHeight = imageRef.current.naturalHeight;
+    
+    if (imgWidth === 0 || imgHeight === 0) return;
+
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = 640;
+    offscreenCanvas.height = 640;
+    const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+    
+    if (!offscreenCtx) return;
+
+    offscreenCtx.drawImage(imageRef.current, 0, 0, 640, 640);
+
+    try {
+      const tensor = preprocess(offscreenCtx, 640, 640);
+      const results = await session.run({ images: tensor });
+      
+      const outputName = session.outputNames[0];
+      const outputTensor = results[outputName];
+
+      const rawPredictions = postprocess(outputTensor, 640, 640, 0.25, 0.45);
+      
+      const scaleX = imgWidth / 640;
+      const scaleY = imgHeight / 640;
+
+      const scaledPredictions = rawPredictions.map(p => ({
+        ...p,
+        box: {
+          x1: p.box.x1 * scaleX,
+          y1: p.box.y1 * scaleY,
+          x2: p.box.x2 * scaleX,
+          y2: p.box.y2 * scaleY,
+        }
+      }));
+
+      setPredictions(scaledPredictions);
+    } catch (e) {
+      console.error("Inference error:", e);
+      setError("Failed to process image.");
+    }
   };
 
   const getClassColor = (className: string) => {
@@ -160,10 +220,11 @@ export default function Home() {
     }
   };
 
+  // ---------------- SCALING LOGIC ----------------
   const [displayScale, setDisplayScale] = useState({ x: 1, y: 1 });
   
   const updateScale = useCallback(() => {
-    if (videoRef.current) {
+    if (mode === "camera" && videoRef.current) {
       const { videoWidth, videoHeight, clientWidth, clientHeight } = videoRef.current;
       if (videoWidth && videoHeight && clientWidth && clientHeight) {
         setDisplayScale({
@@ -171,17 +232,27 @@ export default function Home() {
           y: clientHeight / videoHeight,
         });
       }
+    } else if (mode === "upload" && imageRef.current) {
+      const { naturalWidth, naturalHeight, clientWidth, clientHeight } = imageRef.current;
+      if (naturalWidth && naturalHeight && clientWidth && clientHeight) {
+        setDisplayScale({
+          x: clientWidth / naturalWidth,
+          y: clientHeight / naturalHeight,
+        });
+      }
     }
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     const v = videoRef.current;
-    if (!v) return;
+    const i = imageRef.current;
     const observer = new ResizeObserver(() => updateScale());
-    observer.observe(v);
+    
+    if (mode === "camera" && v) observer.observe(v);
+    if (mode === "upload" && i) observer.observe(i);
+    
     return () => observer.disconnect();
-  }, [updateScale, isStreaming]);
-
+  }, [updateScale, isStreaming, mode, imageSrc]);
 
   return (
     <main className="min-h-screen bg-slate-50/50 text-slate-900 font-sans selection:bg-slate-200">
@@ -205,8 +276,31 @@ export default function Home() {
               <CardContent className="p-6">
                 <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
                   <Camera className="w-5 h-5 text-slate-400" />
-                  Camera Controls
+                  Controls
                 </h3>
+
+                {/* Mode Toggle */}
+                <div className="flex bg-slate-100 p-1 rounded-lg mb-6">
+                  <button
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 text-sm font-medium rounded-md transition-all ${mode === "camera" ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"}`}
+                    onClick={() => {
+                      setMode("camera");
+                      setPredictions([]);
+                    }}
+                  >
+                    <Video className="w-4 h-4" /> Camera
+                  </button>
+                  <button
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 text-sm font-medium rounded-md transition-all ${mode === "upload" ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"}`}
+                    onClick={() => {
+                      stopWebcam();
+                      setMode("upload");
+                      setPredictions([]);
+                    }}
+                  >
+                    <ImageIcon className="w-4 h-4" /> Upload
+                  </button>
+                </div>
 
                 <div className="space-y-4">
                   {isModelLoading ? (
@@ -216,24 +310,52 @@ export default function Home() {
                     </div>
                   ) : (
                     <>
-                      {!isStreaming ? (
-                        <Button
-                          className="w-full bg-zinc-900 hover:bg-zinc-800 text-white shadow-sm"
-                          size="lg"
-                          onClick={startWebcam}
-                        >
-                          <Video className="mr-2 h-5 w-5" />
-                          Start Webcam
-                        </Button>
+                      {mode === "camera" ? (
+                        <>
+                          {!isStreaming ? (
+                            <Button
+                              className="w-full bg-zinc-900 hover:bg-zinc-800 text-white shadow-sm"
+                              size="lg"
+                              onClick={startWebcam}
+                            >
+                              <Video className="mr-2 h-5 w-5" />
+                              Start Webcam
+                            </Button>
+                          ) : (
+                            <Button
+                              className="w-full bg-rose-600 hover:bg-rose-700 text-white shadow-sm"
+                              size="lg"
+                              onClick={stopWebcam}
+                            >
+                              <StopCircle className="mr-2 h-5 w-5" />
+                              Stop Webcam
+                            </Button>
+                          )}
+                        </>
                       ) : (
-                        <Button
-                          className="w-full bg-rose-600 hover:bg-rose-700 text-white shadow-sm"
-                          size="lg"
-                          onClick={stopWebcam}
-                        >
-                          <StopCircle className="mr-2 h-5 w-5" />
-                          Stop Webcam
-                        </Button>
+                        <div className="flex flex-col gap-4">
+                          <input 
+                            type="file" 
+                            accept="image/*"
+                            onChange={handleImageUpload}
+                            className="block w-full text-sm text-slate-500
+                              file:mr-4 file:py-2.5 file:px-4
+                              file:rounded-md file:border-0
+                              file:text-sm file:font-semibold
+                              file:bg-slate-900 file:text-white
+                              hover:file:bg-slate-800 cursor-pointer"
+                          />
+                          {imageSrc && (
+                            <Button 
+                              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm"
+                              size="lg"
+                              onClick={detectImage}
+                            >
+                              <Upload className="mr-2 h-5 w-5" />
+                              Analyze Image
+                            </Button>
+                          )}
+                        </div>
                       )}
                     </>
                   )}
@@ -298,12 +420,20 @@ export default function Home() {
           {/* Right Column: Video & Overlay */}
           <div className="lg:col-span-8">
             <Card className="border-0 shadow-2xl shadow-slate-200/50 bg-black overflow-hidden min-h-[300px] lg:min-h-[500px] flex items-center justify-center relative ring-1 ring-slate-200/50 rounded-xl">
-              {!isStreaming ? (
+              {mode === "camera" && !isStreaming ? (
                 <div className="text-center p-6 lg:p-8 text-slate-400 w-full flex flex-col items-center justify-center">
                   <Camera className="w-16 h-16 lg:w-24 lg:h-24 mb-4 lg:mb-6 opacity-30" />
                   <p className="text-base lg:text-lg">Camera is off</p>
                   <p className="text-xs lg:text-sm opacity-60">
                     Click Start Webcam to begin real-time detection.
+                  </p>
+                </div>
+              ) : mode === "upload" && !imageSrc ? (
+                <div className="text-center p-6 lg:p-8 text-slate-400 w-full flex flex-col items-center justify-center">
+                  <ImageIcon className="w-16 h-16 lg:w-24 lg:h-24 mb-4 lg:mb-6 opacity-30" />
+                  <p className="text-base lg:text-lg">No image selected</p>
+                  <p className="text-xs lg:text-sm opacity-60">
+                    Upload an image from the controls to detect strawberry ripeness.
                   </p>
                 </div>
               ) : (
@@ -312,13 +442,28 @@ export default function Home() {
                     {/* Hidden canvas used for reading pixels */}
                     <canvas ref={canvasRef} className="hidden" />
                     
-                    <video
-                      ref={videoRef}
-                      className="block max-w-full max-h-[70vh] w-auto h-auto object-contain rounded-md"
-                      playsInline
-                      muted
-                      onLoadedMetadata={updateScale}
-                    />
+                    {mode === "camera" && isStreaming && (
+                      <video
+                        ref={videoRef}
+                        className="block max-w-full max-h-[70vh] w-auto h-auto object-contain rounded-md"
+                        playsInline
+                        muted
+                        onLoadedMetadata={updateScale}
+                      />
+                    )}
+
+                    {mode === "upload" && imageSrc && (
+                      <img
+                        ref={imageRef}
+                        src={imageSrc}
+                        alt="Upload Preview"
+                        className="block max-w-full max-h-[70vh] w-auto h-auto object-contain rounded-md"
+                        onLoad={() => {
+                          updateScale();
+                          detectImage(); // Automatically detect when image loads
+                        }}
+                      />
+                    )}
 
                     {/* Bounding Boxes Overlay */}
                     {displayScale.x > 0 && predictions.map((pred, idx) => (
